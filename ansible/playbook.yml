@@ -1,0 +1,147 @@
+---
+- name: Configure Jenkins master
+  hosts: jenkins_master
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+
+    # ----------------------------
+    # Install dependencies & Jenkins
+    # ----------------------------
+    - name: Install dependencies
+      apt:
+        name:
+          - curl
+          - gnupg
+          - ca-certificates
+          - openjdk-17-jdk
+        update_cache: yes
+
+    - name: Add Jenkins GPG key to keyrings
+      command: >
+        curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        -o /usr/share/keyrings/jenkins-keyring.asc
+      args:
+        creates: /usr/share/keyrings/jenkins-keyring.asc
+
+    - name: Add Jenkins repository (signed-by)
+      copy:
+        dest: /etc/apt/sources.list.d/jenkins.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+
+    - name: Ensure Jenkins service is running
+      service:
+        name: jenkins
+        state: started
+        enabled: true
+
+    # ----------------------------
+    # Configure Nginx reverse proxy
+    # ----------------------------
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Place nginx config for Jenkins reverse proxy
+      template:
+        src: nginx_jenkins.conf.j2
+        dest: /etc/nginx/sites-available/jenkins
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable nginx site for Jenkins
+      file:
+        src: /etc/nginx/sites-available/jenkins
+        dest: /etc/nginx/sites-enabled/jenkins
+        state: link
+        force: yes
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
+
+    # ----------------------------
+    # Ensure Jenkins user SSH key
+    # ----------------------------
+    - name: Ensure .ssh directory for jenkins exists
+      file:
+        path: /var/lib/jenkins/.ssh
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: "0700"
+
+    - name: Generate Jenkins SSH key (if not exists)
+      openssh_keypair:
+        path: /var/lib/jenkins/.ssh/id_rsa
+        owner: jenkins
+        group: jenkins
+        type: rsa
+        size: 2048
+        mode: '0600'
+      register: jenkins_key
+
+    - name: Fetch Jenkins public key
+      slurp:
+        src: /var/lib/jenkins/.ssh/id_rsa.pub
+      register: jenkins_pubkey
+
+- name: Prepare Jenkins worker
+  hosts: jenkins_worker
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+
+    - name: Install Java & Docker
+      apt:
+        name:
+          - openjdk-17-jdk
+          - docker.io
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is started
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    # ----------------------------
+    # Add Jenkins master's SSH key to worker
+    # ----------------------------
+    - name: Ensure .ssh directory for ubuntu exists
+      file:
+        path: /home/ubuntu/.ssh
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
+
+    - name: Add Jenkins master's public key to worker
+      authorized_key:
+        user: ubuntu
+        key: "{{ hostvars['3.75.230.209'].jenkins_pubkey.content | b64decode }}"
+        state: present

@@ -1,0 +1,65 @@
+---
+- name: Install dependencies
+  apt:
+    name:
+      - curl
+      - gnupg
+      - ca-certificates
+      - openjdk-17-jdk
+    update_cache: yes
+
+- name: Add Jenkins GPG key
+  command: >
+    curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+    -o /usr/share/keyrings/jenkins-keyring.asc
+  args:
+    creates: /usr/share/keyrings/jenkins-keyring.asc
+
+- name: Add Jenkins repo
+  copy:
+    dest: /etc/apt/sources.list.d/jenkins.list
+    content: |
+      deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/
+
+- name: Install Jenkins
+  apt:
+    name: jenkins
+    state: present
+    update_cache: yes
+
+- name: Enable and start Jenkins
+  service:
+    name: jenkins
+    state: started
+    enabled: true
+
+
+# ----------------------------
+# NGINX reverse proxy
+# ----------------------------
+- name: Install nginx
+  apt:
+    name: nginx
+    state: present
+
+- name: Deploy nginx reverse proxy config
+  template:
+    src: nginx_jenkins.conf.j2
+    dest: /etc/nginx/sites-available/jenkins
+
+- name: Enable Jenkins nginx site
+  file:
+    src: /etc/nginx/sites-available/jenkins
+    dest: /etc/nginx/sites-enabled/jenkins
+    state: link
+    force: yes
+
+- name: Remove Nginx default site
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
+- name: Restart nginx
+  service:
+    name: nginx
+    state: restarted
